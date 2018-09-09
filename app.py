@@ -4,8 +4,8 @@ from flask import Flask, session ,render_template
 from flask_pymongo import PyMongo
 from pymongo import MongoClient
 from bson.json_util import dumps
-from werkzeug.security import check_password_hash, generate_password_hash
-
+from werkzeug.security import check_password_hash, generate_password_hash, safe_str_cmp
+from flask_jwt_extended import (JWTManager, create_access_token, create_refresh_token, decode_token, jwt_required, jwt_refresh_token_required, get_jwt_identity, get_raw_jwt)
 app = Flask(__name__)
 CORS(app)
 api = Api(app)
@@ -13,6 +13,8 @@ app.config.from_mapping(
     SECRET_KEY='dev',
 )
 app.config["MONGO_URI"] = "mongodb://localhost:27017/myDatabase"
+app.config['JWT_SECRET_KEY'] = 'jwt-secret-string'
+jwt = JWTManager(app)
 mongo = PyMongo(app)
 
 TODOS = {
@@ -31,6 +33,7 @@ parser.add_argument('user_id')
 parser.add_argument('user_pw')
 parser.add_argument('user_que')
 parser.add_argument('user_ans')
+parser.add_argument('access_token')
 
 
 
@@ -77,7 +80,6 @@ class MongoList(Resource):
 
 class UserList(Resource):
     def get(self):
-        print(session.get('user_id'))
         client = MongoClient('mongodb://localhost:27017')
         db = client.pookle
         collection = db.users
@@ -95,7 +97,14 @@ class UserList(Resource):
         collection = db.users
         collection.insert({"user_id": user_id, "user_pw": generate_password_hash(user_pw), "user_que": user_que, "user_ans": user_ans})
         client.close()
-        return 0
+        access_token = create_access_token(identity=args['user_id'])
+        refresh_token = create_refresh_token(identity=args['user_id'])
+        return {
+            'message': 'User {} was created'.format(args['user_id']),
+            'access_token': access_token,
+            'refresh_token': refresh_token
+        }
+
 
 class Login(Resource):
     def post(self):
@@ -106,24 +115,51 @@ class Login(Resource):
         users = collection.find()
         user_id = args['user_id']
         user_pw = args['user_pw']
-        for user in users :
+        for user in users:
             if user['user_id'] == user_id:
                 if check_password_hash(user['user_pw'], user_pw):
                     client.close()
-                    session.clear()
-                    session['user_id'] = user['user_id']
-                    print(session['user_id'], session.get('user_id'))
-                    return True
+                    access_token = create_access_token(identity=args['user_id'])
+                    refresh_token = create_refresh_token(identity=args['user_id'])
+                    return {
+                        'message': 'User {} was created'.format(args['user_id']),
+                        'access_token': access_token,
+                        'refresh_token': refresh_token
+                    }
         client.close()
         return False
 
+class Auth(Resource):
+    def post(self):
+        args = parser.parse_args()
+        access_token = args['access_token']
+        user_id = decode_token(access_token)['identity']
+        client = MongoClient('mongodb://localhost:27017')
+        db = client.pookle
+        collection = db.users
+        users = collection.find()
+        for user in users:
+            if user['user_id'] == user_id:
+                current_user = {
+                    'user_id': user['user_id'],
+                }
+                return current_user
+        return {'authentication':False}
 
+class TokenRefresh(Resource):
+    @jwt_refresh_token_required
+    def post(self):
+        current_user = get_jwt_identity()
+        access_token = create_access_token(identity = current_user)
+        return {'access_token': access_token}
 
-api.add_resource(UserList, '/userss')
+api.add_resource(UserList, '/users')
 api.add_resource(Login, '/user/login')
 api.add_resource(MongoList, '/list')
 api.add_resource(TodoList, '/todos')
 api.add_resource(Todo, '/todos/<todo_id>')
+api.add_resource(Auth, '/auth')
+
 
 
 if __name__ == '__main__':
