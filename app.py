@@ -1,4 +1,5 @@
-from flask_restful import reqparse, abort, Api, Resource
+import datetime, json
+from flask_restful import reqparse, abort, Api, Resource, request
 from flask_cors import CORS
 from flask import Flask, session ,render_template
 from flask_pymongo import PyMongo
@@ -6,6 +7,7 @@ from pymongo import MongoClient
 from bson.json_util import dumps
 from werkzeug.security import check_password_hash, generate_password_hash, safe_str_cmp
 from flask_jwt_extended import (JWTManager, create_access_token, create_refresh_token, decode_token, jwt_required, jwt_refresh_token_required, get_jwt_identity, get_raw_jwt)
+from bson.objectid import ObjectId
 app = Flask(__name__)
 CORS(app)
 api = Api(app)
@@ -35,6 +37,22 @@ parser.add_argument('user_que')
 parser.add_argument('user_ans')
 parser.add_argument('access_token')
 
+
+def auth(db):
+    auth_header = request.headers.get('Authorization')
+    auth_token = {}
+    if auth_header:
+        auth_token = auth_header.split(" ")[1]
+    token_user = decode_token(auth_token)
+    user_id = token_user['identity']
+    collection = db.users
+    user = collection.find({'user_id': user_id})
+    return user
+
+def db_manager():
+    client = MongoClient('mongodb://localhost:27017')
+    db = client.pookle
+    return db
 
 
 # Todo
@@ -80,11 +98,10 @@ class MongoList(Resource):
 
 class UserList(Resource):
     def get(self):
-        client = MongoClient('mongodb://localhost:27017')
-        db = client.pookle
+        db = db_manager()
         collection = db.users
         users = dumps(collection.find())
-        client.close()
+        MongoClient('mongodb://localhost:27017').close()
         return users
     def post(self):
         args = parser.parse_args()
@@ -92,18 +109,136 @@ class UserList(Resource):
         user_pw = args['user_pw']
         user_que = args['user_que']
         user_ans = args['user_ans']
-        client = MongoClient('mongodb://localhost:27017')
-        db = client.pookle
+        db = db_manager()
         collection = db.users
-        collection.insert({"user_id": user_id, "user_pw": generate_password_hash(user_pw), "user_que": user_que, "user_ans": user_ans})
-        client.close()
-        access_token = create_access_token(identity=args['user_id'])
-        refresh_token = create_refresh_token(identity=args['user_id'])
+        duplicate = dumps(collection.find({"user_id": user_id}))[1]
+        if duplicate == '{':
+            return "Duplicate accounts"
+        user = {
+            "user_id": user_id,
+            "user_pw": generate_password_hash(user_pw),
+            "user_que": user_que,
+            "user_ans": generate_password_hash(user_ans),
+            "user_nickname": user_id,
+            "user_fav_timeline":[],
+            "user_like_board":[],
+            "user_comment":[],
+            "user_fav_tag": [],
+            "user_reg_date": datetime.datetime.now(),
+            "user_last_date": datetime.datetime.now()
+        }
+        collection.insert(user).close()
+        access_token = create_access_token(identity=user_id, expires_delta=False)
+        refresh_token = create_refresh_token(identity=user_id, expires_delta=False)
         return {
             'message': 'User {} was created'.format(args['user_id']),
             'access_token': access_token,
             'refresh_token': refresh_token
         }
+
+class UserDetail(Resource):
+    def get(self):
+        db = db_manager()
+        collection = db.users
+        user = auth(db)
+        mongo_user = collection.find({'user_id': user[0]['user_id']})
+        dict_user = json.loads(dumps(mongo_user))
+        json_user = {
+            "user_id": dict_user[0]['user_id'],
+            "user_nickname" : dict_user[0]['user_nickname'],
+            "user_fav_timeline" : dict_user[0]['user_fav_timeline'],
+            "user_like_board" : dict_user[0]['user_like_board'],
+            "user_fav_tag": dict_user[0]['user_fav_tag']
+        }
+        MongoClient('mongodb://localhost:27017').close()
+        return json_user
+
+class editNick(Resource):
+    def put(self):
+        parser.add_argument('nickname')
+        args = parser.parse_args()
+        new_nickname = args['nickname']
+        db = db_manager()
+        collection = db.users
+        user = auth(db)
+        collection.update(
+            {'user_id': user[0]['user_id']},
+            {'$set': {'user_nickname': new_nickname}}
+        )
+        MongoClient('mongodb://localhost:27017').close()
+
+
+
+
+class changePasswd(Resource):
+    def put(self):
+        db = db_manager()
+        collection = db.users
+        user = auth(db)
+        parser.add_argument('old_pw')
+        parser.add_argument('new_pw')
+        args = parser.parse_args()
+        old_pw = args['old_pw']
+        new_pw = args['new_pw']
+        if check_password_hash(user[0]['user_pw'], old_pw):
+            collection.update(
+                {'user_id': user[0]['user_id']},
+                {'$set': {'user_pw': generate_password_hash(new_pw)}}
+            ).close()
+            return 'success'
+        else:
+            MongoClient('mongodb://localhost:27017').close()
+            return 'fail'
+
+class favriteTag(Resource):
+    def post(self):
+        parser.add_argument('fav_tag')
+        args = parser.parse_args()
+        fav_tag = args['fav_tag']
+        db = db_manager()
+        collection = db.users
+        user = auth(db)
+        collection.update(
+            {'user_id': user[0]['user_id']},
+            {'$push': {'user_fav_tag': fav_tag}}
+        )
+        MongoClient('mongodb://localhost:27017').close()
+
+
+    def put(self):
+        parser.add_argument('fav_tag')
+        args = parser.parse_args()
+        fav_tag = args['fav_tag']
+        db = db_manager()
+        collection = db.users
+        user = auth(db)
+        collection.update(
+            {'user_id': user[0]['user_id']},
+            {'$pull': {'user_fav_tag': fav_tag}}
+        )
+        MongoClient('mongodb://localhost:27017').close()
+
+
+class FavTimeline(Resource):
+    def put(self):
+        parser.add_argument('$oid')
+        args = parser.parse_args()
+        _id = args['$oid']
+        db = db_manager()
+        timeline_col = db.timeline
+        user = auth(db)
+        timeline_col.update(
+            {'_id': ObjectId(_id)},
+            {'$push':{
+                'timeline_fav': {
+                    'fav_user_id':user[0]['_id'],
+                    'fav_user_name':user[0]['user_id']
+                    }
+                },
+             '$inc': {'fav_cnt':1}
+            }
+        )
+
 
 
 class Login(Resource):
@@ -119,15 +254,16 @@ class Login(Resource):
             if user['user_id'] == user_id:
                 if check_password_hash(user['user_pw'], user_pw):
                     client.close()
-                    access_token = create_access_token(identity=args['user_id'])
-                    refresh_token = create_refresh_token(identity=args['user_id'])
+                    access_token = create_access_token(identity=args['user_id'], expires_delta=False)
+                    refresh_token = create_refresh_token(identity=args['user_id'], expires_delta=False)
                     return {
                         'message': 'User {} was created'.format(args['user_id']),
                         'access_token': access_token,
                         'refresh_token': refresh_token
                     }
-        client.close()
+        MongoClient('mongodb://localhost:27017').close()
         return False
+
 
 class Auth(Resource):
     def post(self):
@@ -144,23 +280,53 @@ class Auth(Resource):
                     'user_id': user['user_id'],
                 }
                 return current_user
-        return {'authentication':False}
+        return {'user_id': ''}
+
 
 class TokenRefresh(Resource):
     @jwt_refresh_token_required
     def post(self):
         current_user = get_jwt_identity()
-        access_token = create_access_token(identity = current_user)
+        access_token = create_access_token(identity = current_user, expires_delta=False)
         return {'access_token': access_token}
 
+
+class Timeline(Resource):
+    def get(self):
+        client = MongoClient('mongodb://localhost:27017')
+        db = client.pookle
+        collection = db.timeline
+        timeline_posts = dumps(collection.find())
+        client.close()
+        return timeline_posts
+
+
+class Board(Resource):
+    def get(self):
+        client = MongoClient('mongodb://localhost:27017')
+        db = client.pookle
+        collection = db.board
+        board_posts = dumps(collection.find())
+        client.close()
+        return board_posts
+    def post(self):
+        return 0
+
+
 api.add_resource(UserList, '/users')
+api.add_resource(UserDetail,'/user')
+api.add_resource(editNick,'/user/nick')
+api.add_resource(changePasswd, '/user/pw')
+api.add_resource(favriteTag, '/user/fav-tag')
 api.add_resource(Login, '/user/login')
 api.add_resource(MongoList, '/list')
 api.add_resource(TodoList, '/todos')
 api.add_resource(Todo, '/todos/<todo_id>')
 api.add_resource(Auth, '/auth')
-
+api.add_resource(Board, '/board')
+api.add_resource(Timeline, '/timeline')
+api.add_resource(FavTimeline, '/timeline/fav')
 
 
 if __name__ == '__main__':
-    app.run(debug=True)
+    app.run(debug=True, host='0.0.0.0')
